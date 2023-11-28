@@ -88,7 +88,7 @@ impl Chip8 {
         }
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.ram = [0; 4096];
         self.registers = [0; 16];
         self.i_reg = 0;
@@ -103,12 +103,12 @@ impl Chip8 {
         self.ram[0 .. FONT_SIZE].copy_from_slice(&FONT);
     }
 
-    pub fn cycle(&mut self) {
+    fn cycle(&mut self) {
         let op = self.fetch();
         self.execute(op);
     }
 
-    pub fn advance_timers(&mut self) {
+    fn advance_timers(&mut self) {
         if self.dt > 0 {
             self.dt -= 1;
         }
@@ -128,11 +128,7 @@ impl Chip8 {
         ret
     }
 
-    pub fn get_screen(&self) -> &[bool] {
-        &self.screen
-    }
-
-    pub fn keypress(&mut self, idx: usize, pressed: bool) {
+    fn keypress(&mut self, idx: usize, pressed: bool) {
         self.keyboard[idx] = pressed;
     }
 
@@ -349,6 +345,121 @@ impl Chip8 {
             _ => {}
         }
     }
+
+    pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+    
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() < 2 {
+            println!("Must specify rom");
+            return Ok(());
+        } else {
+            println!("Args: {:?}", args);
+        }
+    
+        let mut rom = File::open(format!("roms/{}", args[1])).expect("Unable to open file");
+        let mut buffer = vec![];
+    
+        rom.read_to_end(&mut buffer).unwrap();
+        self.load_data(&buffer);
+    
+        loop {
+            terminal.draw(|f| self.ui(f))?;
+    
+            if event::poll(Duration::from_millis(16))? {
+                if let Event::Key(key) = event::read()? {
+                    if key.code == KeyCode::Enter {
+                        self.reset();
+                        let args: Vec<String> = std::env::args().collect();
+                        let mut rom = File::open(format!("roms/{}", args[1])).expect("Unable to open file");
+                        let mut buffer = vec![];
+    
+                        rom.read_to_end(&mut buffer).unwrap();
+                        self.load_data(&buffer);
+                        continue;
+                    }
+    
+                    if key.code == KeyCode::Esc {
+                        return Ok(());
+                    }
+    
+                    let idx = match key.code {
+                        KeyCode::Char(c) => {
+                            match c {
+                                'x' => Some(0x0),
+                                '1' => Some(0x1),
+                                '2' => Some(0x2),
+                                '3' => Some(0x3),
+                                'q' => Some(0x4),
+                                'w' => Some(0x5),
+                                'e' => Some(0x6),
+                                'a' => Some(0x7),
+                                's' => Some(0x8),
+                                'd' => Some(0x9),
+                                'z' => Some(0xA),
+                                'c' => Some(0xB),
+                                '4' => Some(0xC),
+                                'r' => Some(0xD),
+                                'f' => Some(0xE),
+                                'v' => Some(0xF),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+    
+                    match key.kind {
+                        KeyEventKind::Press => {
+                            match idx {
+                                Some(i) => self.keypress(i, true),
+                                None => {}
+                            }
+                        }
+                        KeyEventKind::Release => {
+                            match idx {
+                                Some(i) => self.keypress(i, false),
+                                None => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+    
+            for _ in 0 .. 10 {
+                self.cycle();
+            }
+            self.advance_timers();
+        }
+    }
+
+    fn ui<B: Backend>(&self, f: &mut Frame<B>) {
+        let canvas_area = Rect::new(0, 0, SCREEN_WIDTH + 2, SCREEN_HEIGHT + 2);
+        let block = Block::default()
+            .title("CHIP 8")
+            .borders(Borders::ALL);
+    
+        let canvas = Canvas::default().block(block)
+            .x_bounds([-1.0, SCREEN_WIDTH as f64 + 1.0])
+            .y_bounds([-1.0, SCREEN_HEIGHT as f64 + 1.0])
+            .marker(tui::symbols::Marker::Block)
+            .paint(|ctx| {
+                for idx in 0 .. self.screen.len() {
+                    let y = idx / (SCREEN_WIDTH as usize);
+                    let x = idx % (SCREEN_WIDTH as usize);
+            
+                    ctx.draw(&Rectangle {
+                        x: x as f64,
+                        y: SCREEN_HEIGHT as f64 - 1.0 - y as f64,
+                        width: 1.0,
+                        height: 1.0,
+                        color: if self.screen[idx] { Color::White } else { Color::Black },
+                    });
+                }
+            });
+    
+        f.render_widget(canvas, canvas_area);
+    
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -360,7 +471,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // create app and run it
-    let res = run_app(&mut terminal);
+    let mut cpu = Chip8::new();
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        println!("Must specify rom");
+        return Ok(());
+    }
+
+    let mut rom = File::open(format!("roms/{}", args[1])).expect("Unable to open file");
+    let mut buffer = vec![];
+
+    rom.read_to_end(&mut buffer).unwrap();
+    cpu.load_data(&buffer);
+
+    let res = cpu.run(&mut terminal);
 
     // restore terminal
     disable_raw_mode()?;
@@ -376,122 +500,4 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
-}
-
-fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
-    let mut cpu = Chip8::new();
-
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        println!("Must specify rom");
-        return Ok(());
-    } else {
-        println!("Args: {:?}", args);
-    }
-
-    let mut rom = File::open(format!("roms/{}", args[1])).expect("Unable to open file");
-    let mut buffer = vec![];
-
-    rom.read_to_end(&mut buffer).unwrap();
-    cpu.load_data(&buffer);
-
-    loop {
-        terminal.draw(|f| ui(&cpu, f))?;
-
-        if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Enter {
-                    cpu.reset();
-                    let args: Vec<String> = std::env::args().collect();
-                    let mut rom = File::open(format!("roms/{}", args[1])).expect("Unable to open file");
-                    let mut buffer = vec![];
-
-                    rom.read_to_end(&mut buffer).unwrap();
-                    cpu.load_data(&buffer);
-                    continue;
-                }
-
-                if key.code == KeyCode::Esc {
-                    return Ok(());
-                }
-
-                let idx = match key.code {
-                    KeyCode::Char(c) => {
-                        match c {
-                            'x' => Some(0x0),
-                            '1' => Some(0x1),
-                            '2' => Some(0x2),
-                            '3' => Some(0x3),
-                            'q' => Some(0x4),
-                            'w' => Some(0x5),
-                            'e' => Some(0x6),
-                            'a' => Some(0x7),
-                            's' => Some(0x8),
-                            'd' => Some(0x9),
-                            'z' => Some(0xA),
-                            'c' => Some(0xB),
-                            '4' => Some(0xC),
-                            'r' => Some(0xD),
-                            'f' => Some(0xE),
-                            'v' => Some(0xF),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                };
-
-                match key.kind {
-                    KeyEventKind::Press => {
-                        match idx {
-                            Some(i) => cpu.keypress(i, true),
-                            None => {}
-                        }
-                    }
-                    KeyEventKind::Release => {
-                        match idx {
-                            Some(i) => cpu.keypress(i, false),
-                            None => {}
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        for _ in 0 .. 10 {
-            cpu.cycle();
-        }
-        cpu.advance_timers();
-    }
-}
-
-fn ui<B: Backend>(cpu: &Chip8, f: &mut Frame<B>) {
-    let canvas_area = Rect::new(0, 0, SCREEN_WIDTH + 2, SCREEN_HEIGHT + 2);
-    let block = Block::default()
-        .title("CHIP 8")
-        .borders(Borders::ALL);
-
-    let canvas = Canvas::default().block(block)
-        .x_bounds([-1.0, SCREEN_WIDTH as f64 + 1.0])
-        .y_bounds([-1.0, SCREEN_HEIGHT as f64 + 1.0])
-        .marker(tui::symbols::Marker::Block)
-        .paint(|ctx| {
-            let screen = cpu.get_screen();
-            for idx in 0 .. screen.len() {
-                let y = idx / (SCREEN_WIDTH as usize);
-                let x = idx % (SCREEN_WIDTH as usize);
-        
-                ctx.draw(&Rectangle {
-                    x: x as f64,
-                    y: SCREEN_HEIGHT as f64 - 1.0 - y as f64,
-                    width: 1.0,
-                    height: 1.0,
-                    color: if screen[idx] { Color::White } else { Color::Black },
-                }
-                );
-            }
-        });
-
-    f.render_widget(canvas, canvas_area);
-
 }
